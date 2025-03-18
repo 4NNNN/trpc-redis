@@ -6,68 +6,78 @@ import {
   inferRouterContext
 } from '@trpc/server';
 import type { OnErrorFunction } from '@trpc/server/dist/internals/types';
-import type { MqttClient } from 'mqtt';
 
+import type { RedisClient } from '../lib/redis';
 import { getErrorFromUnknown } from './errors';
 
 // import * as amqp from 'amqp-connection-manager';
 type ConsumeMessage = string;
 
-const MQTT_METHOD_PROCEDURE_TYPE_MAP: Record<string, ProcedureType | undefined> = {
+const REDIS_METHOD_PROCEDURE_TYPE_MAP: Record<string, ProcedureType | undefined> = {
   query: 'query',
   mutation: 'mutation'
 };
 
-export type CreateMQTTHandlerOptions<TRouter extends AnyRouter> = {
-  client: MqttClient;
-  requestTopic: string;
+export type CreateRedisHandlerOptions<TRouter extends AnyRouter> = {
+  client: RedisClient;
+  requestChannel: string;
+  responseChannel?: string;
   router: TRouter;
   onError?: OnErrorFunction<TRouter, ConsumeMessage>;
   verbose?: boolean;
   createContext?: () => Promise<inferRouterContext<TRouter>>;
 };
 
-export const createMQTTHandler = <TRouter extends AnyRouter>(
-  opts: CreateMQTTHandlerOptions<TRouter>
+export const createRedisHandler = <TRouter extends AnyRouter>(
+  opts: CreateRedisHandlerOptions<TRouter>
 ) => {
-  const { client, requestTopic: requestTopic, router, onError, verbose, createContext } = opts;
+  const {
+    client,
+    requestChannel,
+    responseChannel = `${requestChannel}/response`,
+    router,
+    onError,
+    verbose,
+    createContext
+  } = opts;
 
-  const protocolVersion = client.options.protocolVersion ?? 4;
-  client.subscribe(requestTopic);
-  client.on('message', async (topic, message, packet) => {
-    if (requestTopic !== topic) return; // Ignore messages not on the response topic, from other users of the shared client
-    const msg = message.toString();
-    if (verbose) console.log(topic, msg);
-    if (!msg) return;
-    if (protocolVersion >= 5) {
-      // MQTT 5.0+, use the correlationData & responseTopic field
-      const correlationId = packet.properties?.correlationData?.toString();
-      const responseTopic = packet.properties?.responseTopic?.toString();
-      if (!correlationId || !responseTopic) return;
-      const res = await handleMessage(router, msg, onError, createContext);
+  const subscriber = client.duplicate();
+
+  subscriber.subscribe(requestChannel, err => {
+    if (err) {
+      console.error('Failed to subscribe to Redis channel:', err);
+      return;
+    }
+    if (verbose) console.log(`Subscribed to Redis channel: ${requestChannel}`);
+  });
+
+  subscriber.on('message', async (channel, message) => {
+    if (channel !== requestChannel) return;
+    if (verbose) console.log(channel, message);
+    if (!message) return;
+
+    try {
+      const parsed = JSON.parse(message);
+      const { trpc, correlationId, responseChannel: msgResponseChannel } = parsed;
+
+      if (!trpc || !correlationId || !msgResponseChannel) return;
+
+      const res = await handleMessage(router, message, onError, createContext);
       if (!res) return;
-      client.publish(responseTopic, Buffer.from(JSON.stringify({ trpc: res })), {
-        properties: {
-          correlationData: Buffer.from(correlationId)
-        }
-      });
-    } else {
-      // MQTT < 5.0, use the message itself
-      let correlationId: string | undefined;
-      let responseTopic: string | undefined;
-      try {
-        const parsed = JSON.parse(msg);
-        correlationId = parsed.correlationId;
-        responseTopic = parsed.responseTopic;
-      } catch (err) {
-        return;
-      }
-      if (!correlationId || !responseTopic) return;
-      const res = await handleMessage(router, msg, onError, createContext);
-      if (!res) return;
-      client.publish(responseTopic, Buffer.from(JSON.stringify({ trpc: res, correlationId })));
+
+      client.publish(
+        msgResponseChannel,
+        JSON.stringify({
+          trpc: res,
+          correlationId
+        })
+      );
+    } catch (err) {
+      console.error('Error processing Redis message:', err);
     }
   });
+
+  return { subscriber, client };
 };
 
 async function handleMessage<TRouter extends AnyRouter>(
@@ -86,7 +96,7 @@ async function handleMessage<TRouter extends AnyRouter>(
     if (!trpc) return;
 
     const { id, params } = trpc;
-    const type = MQTT_METHOD_PROCEDURE_TYPE_MAP[trpc.method] ?? ('query' as const);
+    const type = REDIS_METHOD_PROCEDURE_TYPE_MAP[trpc.method] ?? ('query' as const);
     const ctx: inferRouterContext<TRouter> | undefined = await createContext?.();
 
     try {
@@ -98,7 +108,7 @@ async function handleMessage<TRouter extends AnyRouter>(
 
       if (type === 'subscription') {
         throw new TRPCError({
-          message: 'MQTT link does not support subscriptions (yet?)',
+          message: 'Redis link does not support subscriptions (yet?)',
           code: 'METHOD_NOT_SUPPORTED'
         });
       }
@@ -147,7 +157,15 @@ async function handleMessage<TRouter extends AnyRouter>(
       };
     }
   } catch (cause) {
-    // TODO: Assume json parsing error (so shouldn't happen), but we need to handle this better
-    return {};
+    const error = getErrorFromUnknown(cause);
+    onError?.({
+      error,
+      type: 'unknown',
+      path: undefined,
+      input: undefined,
+      ctx: undefined,
+      req: msg
+    });
+    return;
   }
 }

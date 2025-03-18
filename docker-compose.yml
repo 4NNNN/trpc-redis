@@ -1,12 +1,17 @@
 version: '2.1'
 services:
-  mqtt:
-    image: eclipse-mosquitto:2
+  redis-docker:
+    image: redis:latest
     ports:
-      - 1883:1883
-      - 9001:9001
+      - '6379:6379'
+    restart: always
+    container_name: redis-docker
     volumes:
-      - ./config/:/mosquitto/config/:ro
-      - mqtt:/mosquitto/data
+      - redis_data:/data
+    networks:
+      - redis-network
 volumes:
-  mqtt:
+  redis_data:
+
+networks:
+  redis-network:

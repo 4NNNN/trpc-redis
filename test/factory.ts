@@ -1,50 +1,51 @@
 import { createTRPCProxyClient } from '@trpc/client';
-import Aedes from 'aedes';
-import { once } from 'events';
-import mqtt from 'mqtt';
-import { createServer } from 'net';
 
-import { createMQTTHandler } from '../src/adapter';
-import { mqttLink } from '../src/link';
+import { createRedisHandler } from '../src/adapter';
+import { createRedis } from '../src/lib/redis';
+import { redisLink } from '../src/link';
 import { type AppRouter, appRouter, createContext } from './appRouter';
 
 export function factory() {
-  const requestTopic = 'rpc/request';
+  const requestChannel = 'rpc/request';
 
-  const aedes = new Aedes();
-  // aedes.on('publish', (packet, client) => console.log(packet.topic, packet.payload.toString()));
-  const broker = createServer(aedes.handle);
-  broker.listen(1883);
-  const mqttClient = mqtt.connect('mqtt://localhost');
+  // Create Redis clients for server and client
+  const redisClient = createRedis({
+    host: '127.0.0.1',
+    port: 6379
+  });
 
-  createMQTTHandler({
-    client: mqttClient,
-    requestTopic,
+  const { subscriber, client: serverClient } = createRedisHandler({
+    client: redisClient,
+    requestChannel,
     router: appRouter,
     createContext
   });
 
   const client = createTRPCProxyClient<AppRouter>({
     links: [
-      mqttLink({
-        client: mqttClient,
-        requestTopic
+      redisLink({
+        client: redisClient,
+        requestChannel
       })
     ]
   });
 
   return {
     client,
-    broker,
-    mqttClient,
+    redisClient,
     async ready() {
-      await once(broker, 'listening');
-      await once(mqttClient, 'connect');
+      // Wait for Redis client to be ready
+      if (!redisClient.status || redisClient.status !== 'ready') {
+        await new Promise<void>(resolve => {
+          redisClient.once('ready', () => {
+            resolve();
+          });
+        });
+      }
     },
     close() {
-      mqttClient.end();
-      broker.close();
-      aedes.close();
+      redisClient.quit();
+      subscriber.quit();
     }
   };
 }

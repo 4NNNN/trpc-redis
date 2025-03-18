@@ -1,53 +1,50 @@
 import { TRPCClientError, TRPCLink } from '@trpc/client';
-import type { AnyRouter } from '@trpc/server';
+import type { AnyRouter, DataTransformer } from '@trpc/server';
 import { observable } from '@trpc/server/observable';
 import { randomUUID } from 'crypto';
 import EventEmitter from 'events';
-import type { MqttClient } from 'mqtt';
 
-import type { TRPCMQTTRequest, TRPCMQTTResponse } from '../types';
+import type { RedisClient } from '../lib/redis';
+import type { RedisChannelOptions, TRPCRedisRequest, TRPCRedisResponse } from '../types';
 
-export type TRPCMQTTLinkOptions = {
-  client: MqttClient;
-  requestTopic: string;
-  responseTopic?: string;
+export type TRPCRedisLinkOptions = RedisChannelOptions & {
+  client: RedisClient;
   requestTimeoutMs?: number;
 };
 
-export const mqttLink = <TRouter extends AnyRouter>(
-  opts: TRPCMQTTLinkOptions
+export const redisLink = <TRouter extends AnyRouter>(
+  opts: TRPCRedisLinkOptions
 ): TRPCLink<TRouter> => {
   // This runs once, at the initialization of the link
   return runtime => {
     const {
       client,
-      requestTopic,
-      responseTopic = `${requestTopic}/response`,
+      requestChannel,
+      responseChannel = `${requestChannel}/response`,
       requestTimeoutMs = 5000
     } = opts;
     const responseEmitter = new EventEmitter();
     responseEmitter.setMaxListeners(0);
 
-    const protocolVersion = client.options.protocolVersion ?? 4;
+    // Create a duplicate connection for subscribing
+    const subscriber = client.duplicate();
 
-    client.subscribe(responseTopic);
-    client.on('message', (topic, message, packet) => {
-      if (responseTopic !== topic) return; // Ignore messages not on the response topic, from other users of the shared client
-      const msg = message.toString();
-      if (protocolVersion >= 5) {
-        const correlationData = packet.properties?.correlationData?.toString();
-        if (correlationData === undefined) return;
-        responseEmitter.emit(correlationData, JSON.parse(msg));
-      } else {
-        let correlationId: string | undefined;
-        try {
-          const parsed = JSON.parse(msg);
-          correlationId = parsed.correlationId;
-        } catch (err) {
-          return;
-        }
+    subscriber.subscribe(responseChannel, err => {
+      if (err) {
+        console.error('Failed to subscribe to Redis response channel:', err);
+        return;
+      }
+    });
+
+    subscriber.on('message', (channel, message) => {
+      if (responseChannel !== channel) return; // Ignore messages not on the response channel
+      try {
+        const parsed = JSON.parse(message);
+        const { correlationId } = parsed;
         if (correlationId === undefined) return;
-        responseEmitter.emit(correlationId, JSON.parse(msg));
+        responseEmitter.emit(correlationId, parsed);
+      } catch (err) {
+        console.error('Error parsing Redis response:', err);
       }
     });
 
@@ -56,100 +53,82 @@ export const mqttLink = <TRouter extends AnyRouter>(
       return observable(observer => {
         const abortController = new AbortController();
 
-        const { id, type, path } = op;
+        const { path, input, type } = op;
+        const id = op.id;
 
-        try {
-          const input = runtime.transformer.serialize(op.input);
+        const transformer = runtime.transformer as DataTransformer;
 
-          const onMessage = (message: TRPCMQTTResponse) => {
-            if (!('trpc' in message)) return;
-            const { trpc } = message;
-            if (!trpc) return;
-            if (!('id' in trpc) || trpc.id === null || trpc.id === undefined) return;
-            if (id !== trpc.id) return;
+        const message: TRPCRedisRequest = {
+          trpc: {
+            id,
+            method: type,
+            params: {
+              path,
+              input: input !== undefined ? transformer.serialize(input) : undefined
+            }
+          }
+        };
 
-            if ('error' in trpc) {
-              const error = runtime.transformer.deserialize(trpc.error);
-              observer.error(TRPCClientError.from({ ...trpc, error }));
-              return;
+        const request = async (message: TRPCRedisRequest, signal: AbortSignal) =>
+          new Promise<any>((resolve, reject) => {
+            const correlationId = randomUUID();
+            const onTimeout = () => {
+              responseEmitter.off(correlationId, onMessage);
+              signal.onabort = null;
+              reject(new TRPCClientError('Request timed out after ' + requestTimeoutMs + 'ms'));
+            };
+            const onAbort = () => {
+              // This runs when the request is aborted externally
+              clearTimeout(timeout);
+              responseEmitter.off(correlationId, onMessage);
+              reject(new TRPCClientError('Request aborted'));
+            };
+            const timeout = setTimeout(onTimeout, requestTimeoutMs);
+            signal.onabort = onAbort;
+            const onMessage = (message: TRPCRedisResponse) => {
+              clearTimeout(timeout);
+              resolve(message);
+            };
+            responseEmitter.once(correlationId, onMessage);
+
+            // Send the message with correlationId and responseChannel
+            client.publish(
+              requestChannel,
+              JSON.stringify({
+                ...message,
+                correlationId,
+                responseChannel
+              })
+            );
+          });
+
+        request(message, abortController.signal)
+          .then(rawResponse => {
+            if ('error' in rawResponse.trpc) {
+              observer.error(TRPCClientError.from(rawResponse.trpc.error));
+              return null;
             }
 
             observer.next({
               result: {
-                ...trpc.result,
-                ...((!trpc.result.type || trpc.result.type === 'data') && {
-                  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                  data: runtime.transformer.deserialize(trpc.result.data)!
+                ...rawResponse.trpc.result,
+                ...(rawResponse.trpc.result?.data != null && {
+                  data: transformer.deserialize(rawResponse.trpc.result.data)
                 })
               }
             });
-
             observer.complete();
-          };
-
-          const request = async (message: TRPCMQTTRequest, signal: AbortSignal) =>
-            new Promise<any>((resolve, reject) => {
-              const correlationId = randomUUID();
-              const onTimeout = () => {
-                responseEmitter.off(correlationId, onMessage);
-                signal.onabort = null;
-                reject(new TRPCClientError('Request timed out after ' + requestTimeoutMs + 'ms'));
-              };
-              const onAbort = () => {
-                // This runs when the request is aborted externally
-                clearTimeout(timeout);
-                responseEmitter.off(correlationId, onMessage);
-                reject(new TRPCClientError('Request aborted'));
-              };
-              const timeout = setTimeout(onTimeout, requestTimeoutMs);
-              signal.onabort = onAbort;
-              const onMessage = (message: TRPCMQTTResponse) => {
-                clearTimeout(timeout);
-                resolve(message);
-              };
-              responseEmitter.once(correlationId, onMessage);
-              if (protocolVersion >= 5) {
-                // MQTT 5.0+, use the correlationData & responseTopic field
-                const opts = {
-                  properties: {
-                    responseTopic,
-                    correlationData: Buffer.from(correlationId)
-                  }
-                };
-                client.publish(requestTopic, JSON.stringify(message), opts);
-              } else {
-                // MQTT < 5.0, use the message itself
-                client.publish(
-                  requestTopic,
-                  JSON.stringify({ ...message, correlationId, responseTopic })
-                );
-              }
-            });
-
-          request(
-            {
-              trpc: {
-                id,
-                method: type,
-                params: { path, input }
-              }
-            },
-            abortController.signal
-          )
-            .then(onMessage)
-            .catch(cause => {
-              observer.error(
-                new TRPCClientError(cause instanceof Error ? cause.message : 'Unknown error')
-              );
-            });
-        } catch (cause) {
-          observer.error(
-            new TRPCClientError(cause instanceof Error ? cause.message : 'Unknown error')
-          );
-        }
+            return null;
+          })
+          .catch(cause => {
+            observer.error(
+              cause instanceof TRPCClientError
+                ? cause
+                : new TRPCClientError(cause instanceof Error ? cause.message : 'Unknown error')
+            );
+          });
 
         return () => {
-          // This runs after every procedure call, whether it was successful, unsuccessful, or externally aborted
           abortController.abort();
         };
       });

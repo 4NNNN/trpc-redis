@@ -1,71 +1,116 @@
-<div align="center">
-  <img src="assets/trpc-mqtt-readme.png" alt="trpc-mqtt" />
-  <h1>trpc-mqtt</h1>
-  <a href="https://www.npmjs.com/package/trpc-mqtt"><img src="https://img.shields.io/npm/v/trpc-mqtt.svg?style=flat&color=brightgreen" /></a>
-  <a href="https://github.com/edorgeville/trpc-mqtt/actions/workflows/test.yml"><img src="https://github.com/edorgeville/trpc-mqtt/actions/workflows/test.yml/badge.svg" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-black" /></a>
-  <br />
-  <hr />
-</div>
+# tRPC-Redis
 
+A tRPC adapter for Redis. This allows you to use Redis pub/sub as a transport layer for tRPC.
 
-## Usage
-
-**1. Install `trpc-mqtt`.**
+## Installation
 
 ```bash
-# npm
-npm install trpc-mqtt mqtt@5
-# yarn
-yarn add trpc-mqtt mqtt@5
-# pnpm
-pnpm add trpc-mqtt mqtt@5
+npm install trpc-redis
 ```
 
-**2. Use `mqttLink` in your client code.**
+## Server-side usage
+
+```typescript
+import { initTRPC } from '@trpc/server';
+import { createRedisHandler } from 'trpc-redis/adapter';
+import { createRedis } from 'trpc-redis/lib/redis';
+
+// Initialize your tRPC router
+const t = initTRPC.create();
+const router = t.router({
+  // your procedures here
+  hello: t.procedure.query(() => 'world')
+});
+
+export type AppRouter = typeof router;
+
+// Create a Redis client
+const redisClient = createRedis({
+  host: 'localhost',
+  port: 6379
+});
+
+// Create the Redis handler
+const { subscriber } = createRedisHandler({
+  client: redisClient,
+  requestChannel: 'trpc/request',
+  router: router
+});
+
+// Handle cleanup
+process.on('SIGINT', () => {
+  redisClient.quit();
+  subscriber.quit();
+});
+```
+
+## Client-side usage
 
 ```typescript
 import { createTRPCProxyClient } from '@trpc/client';
-import { mqttLink } from 'trpc-mqtt/link';
-import mqtt from 'mqtt';
+import { createRedis } from 'trpc-redis/lib/redis';
+import { redisLink } from 'trpc-redis/link';
 
-import type { AppRouter } from './appRouter';
+import type { AppRouter } from './server';
 
-const client = mqtt.connect('mqtt://localhost');
+// Create a Redis client
+const redisClient = createRedis({
+  host: 'localhost',
+  port: 6379
+});
 
-export const trpc = createTRPCProxyClient<AppRouter>({
+// Create the tRPC client
+const client = createTRPCProxyClient<AppRouter>({
   links: [
-    mqttLink({
-      client,
-      requestTopic: "rpc/request"
+    redisLink({
+      client: redisClient,
+      requestChannel: 'trpc/request'
     })
-  ],
+  ]
 });
+
+// Example usage
+async function main() {
+  const result = await client.hello.query();
+  console.log(result); // 'world'
+
+  // Close the Redis client when done
+  redisClient.quit();
+}
+
+main().catch(console.error);
 ```
 
-Note: don't forget to clean up the MQTT client when you're done, using `client.end()`.
+## Configuration Options
 
-**3. Use `createMQTTHandler` to handle incoming calls via mqtt on the server.**
+### Redis Client Options
 
-```typescript
-import { createMQTTHandler } from 'trpc-mqtt/adapter';
+The `createRedis` function accepts all options from `ioredis`, plus:
 
-import { appRouter } from './appRouter';
+- `enableOfflineQueue` - Whether to queue commands when connection is lost (default: `true`)
+- `retryStrategy` - A function that receives the retry count and returns the milliseconds to wait before retrying
 
-const client = mqtt.connect('mqtt://localhost');
+### Redis Handler Options
 
-createMQTTHandler({ 
-  client,
-  requestTopic: "rpc/request",
-  router: appRouter
-});
-```
+- `client` - Redis client instance
+- `requestChannel` - The channel to subscribe to for requests
+- `responseChannel` - The channel to publish responses to (default: `${requestChannel}/response`)
+- `router` - Your tRPC router
+- `onError` - A function to handle errors
+- `verbose` - Whether to log debug information
+- `createContext` - A function to create the request context
 
-Note: same as with the link, don't forget to clean up the MQTT client when you're done, using `client.end()`.
+### Redis Link Options
+
+- `client` - Redis client instance
+- `requestChannel` - The channel to publish requests to
+- `responseChannel` - The channel to subscribe to for responses (default: `${requestChannel}/response`)
+- `requestTimeoutMs` - Timeout for requests in milliseconds (default: `5000`)
 
 ## License
 
-Distributed under the MIT License. See LICENSE for more information.
+MIT
 
-## Special thanks
-This project is a fork of [trpc-rabbitmq](https://github.com/imxeno/trpc-rabbitmq) by [Piotr Adamczyk](https://github.com/imxeno)
+## Acknowledgements
+
+This project is based on the architecture of [trpc-rabbitmq](https://github.com/imxeno/trpc-rabbitmq) by [Piotr Adamczyk](https://github.com/imxeno) and [trpc-mqtt](https://github.com/edorgeville/trpc-mqtt).

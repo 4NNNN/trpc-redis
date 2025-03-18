@@ -1,25 +1,25 @@
 {
-  "name": "trpc-mqtt",
-  "version": "1.1.0",
-  "description": "tRPC adapter for MQTT",
-  "author": "Erwan d'Orgeville <info@erwandorgeville.com>",
+  "name": "trpc-redis",
+  "version": "1.0.0",
+  "description": "tRPC adapter for Redis",
+  "author": "Simon Nguyen <nxuantuanminh@gmail.com>",
   "license": "MIT",
   "keywords": [
     "trpc",
-    "mqtt"
+    "redis"
   ],
-  "homepage": "https://github.com/edorgeville/trpc-mqtt",
-  "repository": "github:edorgeville/trpc-mqtt",
-  "bugs": "https://github.com/edorgeville/trpc-mqtt/issues",
+  "homepage": "https://github.com/cobeo2004/trpc-redis",
+  "repository": "github:cobeo2004/trpc-redis",
+  "bugs": "https://github.com/cobeo2004/trpc-redis/issues",
   "scripts": {
     "prepublish": "npm run build",
-    "test": "tsc --noEmit && jest",
+    "test": "tsc --noEmit && jest --detectOpenHandles",
     "build": "rimraf dist && rimraf adapter && rimraf link && rimraf types && tsc -p tsconfig.build.json && shx mv dist/* . && rimraf dist"
   },
   "peerDependencies": {
     "@trpc/client": "^10.9.1",
     "@trpc/server": "^10.9.1",
-    "mqtt": "^5.5.3"
+    "ioredis": "^5.0.0"
   },
   "devDependencies": {
     "@trivago/prettier-plugin-sort-imports": "^3.3.0",
@@ -27,7 +27,6 @@
     "@types/node": "^18.8.5",
     "@typescript-eslint/eslint-plugin": "^5.40.0",
     "@typescript-eslint/parser": "^5.40.0",
-    "aedes": "^0.51.1",
     "eslint": "^8.25.0",
     "eslint-config-prettier": "^8.5.0",
     "eslint-plugin-import": "^2.26.0",
@@ -43,5 +42,8 @@
     "ts-node": "^10.9.1",
     "typescript": "^4.8.4",
     "zod": "^3.19.1"
+  },
+  "dependencies": {
+    "ioredis": "^5.6.0"
   }
 }

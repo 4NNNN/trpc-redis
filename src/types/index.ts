@@ -5,16 +5,22 @@ import type {
   TRPCResultMessage
 } from '@trpc/server/rpc';
 
-export type TRPCMQTTRequest = {
+export type TRPCRedisRequest = {
   trpc: TRPCRequest | TRPCClientOutgoingMessage;
 };
 
-export type TRPCMQTTSuccessResponse = {
+export type TRPCRedisSuccessResponse = {
   trpc: TRPCResultMessage<any>;
 };
 
-export type TRPCMQTTErrorResponse = {
+export type TRPCRedisErrorResponse = {
   trpc: TRPCErrorResponse;
 };
 
-export type TRPCMQTTResponse = TRPCMQTTSuccessResponse | TRPCMQTTErrorResponse;
+export type TRPCRedisResponse = TRPCRedisSuccessResponse | TRPCRedisErrorResponse;
+
+// Redis-specific types
+export type RedisChannelOptions = {
+  requestChannel: string;
+  responseChannel?: string;
+};
