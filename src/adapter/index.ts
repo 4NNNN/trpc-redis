@@ -21,7 +21,6 @@ const REDIS_METHOD_PROCEDURE_TYPE_MAP: Record<string, ProcedureType | undefined>
 export type CreateRedisHandlerOptions<TRouter extends AnyRouter> = {
   client: RedisClient;
   requestChannel: string;
-  responseChannel?: string;
   router: TRouter;
   onError?: OnErrorFunction<TRouter, ConsumeMessage>;
   verbose?: boolean;
@@ -31,15 +30,7 @@ export type CreateRedisHandlerOptions<TRouter extends AnyRouter> = {
 export const createRedisHandler = <TRouter extends AnyRouter>(
   opts: CreateRedisHandlerOptions<TRouter>
 ) => {
-  const {
-    client,
-    requestChannel,
-    responseChannel = `${requestChannel}/response`,
-    router,
-    onError,
-    verbose,
-    createContext
-  } = opts;
+  const { client, requestChannel, router, onError, verbose, createContext } = opts;
 
   const subscriber = client.duplicate();
 
