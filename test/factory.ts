@@ -14,7 +14,7 @@ export function factory() {
     port: 6379
   });
 
-  const { subscriber, client: serverClient } = createRedisHandler({
+  const { subscriber } = createRedisHandler({
     client: redisClient,
     requestChannel,
     router: appRouter,
@@ -24,7 +24,7 @@ export function factory() {
   const client = createTRPCProxyClient<AppRouter>({
     links: [
       redisLink({
-        client: serverClient,
+        client: redisClient,
         requestChannel
       })
     ]
