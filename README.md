@@ -94,7 +94,6 @@ The `createRedis` function accepts all options from `ioredis`, plus:
 
 - `client` - Redis client instance
 - `requestChannel` - The channel to subscribe to for requests
-- `responseChannel` - The channel to publish responses to (default: `${requestChannel}/response`)
 - `router` - Your tRPC router
 - `onError` - A function to handle errors
 - `verbose` - Whether to log debug information
