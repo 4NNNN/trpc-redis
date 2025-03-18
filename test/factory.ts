@@ -24,7 +24,7 @@ export function factory() {
   const client = createTRPCProxyClient<AppRouter>({
     links: [
       redisLink({
-        client: redisClient,
+        client: serverClient,
         requestChannel
       })
     ]
@@ -55,6 +55,8 @@ export async function withFactory(fn: (f: ReturnType<typeof factory>) => Promise
   await f.ready();
   try {
     await fn(f);
+  } catch (e) {
+    console.error(e);
   } finally {
     f.close();
   }
