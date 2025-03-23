@@ -2,6 +2,9 @@
 
 A tRPC adapter for Redis. This allows you to use Redis pub/sub as a transport layer for tRPC.
 
+
+### UPDATE: This package is now officially in the list of **Awesome tRPC Collection**, check out [now](https://trpc.io/docs/community/awesome-trpc)
+
 ## Installation
 
 ```bash
