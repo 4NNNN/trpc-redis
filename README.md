@@ -50,7 +50,7 @@ process.on('SIGINT', () => {
 ## Client-side usage
 
 ```typescript
-import { createTRPCProxyClient } from '@trpc/client';
+import { createTRPCClient } from '@trpc/client';
 import { createRedis } from 'trpc-redis/lib/redis';
 import { redisLink } from 'trpc-redis/link';
 
@@ -63,7 +63,7 @@ const redisClient = createRedis({
 });
 
 // Create the tRPC client
-const client = createTRPCProxyClient<AppRouter>({
+const client = createTRPCClient<AppRouter>({
   links: [
     redisLink({
       client: redisClient,

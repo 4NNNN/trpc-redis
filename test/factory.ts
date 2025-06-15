@@ -1,4 +1,4 @@
-import { createTRPCProxyClient } from '@trpc/client';
+import { createTRPCClient } from '@trpc/client';
 
 import { createRedisHandler } from '../src/adapter';
 import { createRedis } from '../src/lib/redis';
@@ -21,7 +21,7 @@ export function factory() {
     createContext
   });
 
-  const client = createTRPCProxyClient<AppRouter>({
+  const client = createTRPCClient<AppRouter>({
     links: [
       redisLink({
         client: redisClient,

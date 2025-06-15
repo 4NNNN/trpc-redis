@@ -2,20 +2,23 @@ import {
   AnyRouter,
   ProcedureType,
   TRPCError,
-  callProcedure,
-  inferRouterContext
-} from '@trpc/server';
-import type { OnErrorFunction } from '@trpc/server/dist/internals/types';
+  callTRPCProcedure,
+  inferRouterContext,
+  getErrorShape,
+} from "@trpc/server";
 
-import type { RedisClient } from '../lib/redis';
-import { getErrorFromUnknown } from './errors';
+import type { RedisClient } from "../lib/redis";
+import { getErrorFromUnknown } from "./errors";
 
 // import * as amqp from 'amqp-connection-manager';
 type ConsumeMessage = string;
 
-const REDIS_METHOD_PROCEDURE_TYPE_MAP: Record<string, ProcedureType | undefined> = {
-  query: 'query',
-  mutation: 'mutation'
+const REDIS_METHOD_PROCEDURE_TYPE_MAP: Record<
+  string,
+  ProcedureType | undefined
+> = {
+  query: "query",
+  mutation: "mutation",
 };
 
 export type CreateRedisHandlerOptions<TRouter extends AnyRouter> = {
@@ -30,26 +33,31 @@ export type CreateRedisHandlerOptions<TRouter extends AnyRouter> = {
 export const createRedisHandler = <TRouter extends AnyRouter>(
   opts: CreateRedisHandlerOptions<TRouter>
 ) => {
-  const { client, requestChannel, router, onError, verbose, createContext } = opts;
+  const { client, requestChannel, router, onError, verbose, createContext } =
+    opts;
 
   const subscriber = client.duplicate();
 
-  subscriber.subscribe(requestChannel, err => {
+  subscriber.subscribe(requestChannel, (err) => {
     if (err) {
-      console.error('Failed to subscribe to Redis channel:', err);
+      console.error("Failed to subscribe to Redis channel:", err);
       return;
     }
     if (verbose) console.log(`Subscribed to Redis channel: ${requestChannel}`);
   });
 
-  subscriber.on('message', async (channel, message) => {
+  subscriber.on("message", async (channel, message) => {
     if (channel !== requestChannel) return;
     if (verbose) console.log(channel, message);
     if (!message) return;
 
     try {
       const parsed = JSON.parse(message);
-      const { trpc, correlationId, responseChannel: msgResponseChannel } = parsed;
+      const {
+        trpc,
+        correlationId,
+        responseChannel: msgResponseChannel,
+      } = parsed;
 
       if (!trpc || !correlationId || !msgResponseChannel) return;
 
@@ -60,11 +68,11 @@ export const createRedisHandler = <TRouter extends AnyRouter>(
         msgResponseChannel,
         JSON.stringify({
           trpc: res,
-          correlationId
+          correlationId,
         })
       );
     } catch (err) {
-      console.error('Error processing Redis message:', err);
+      console.error("Error processing Redis message:", err);
     }
   });
 
@@ -81,49 +89,55 @@ async function handleMessage<TRouter extends AnyRouter>(
 
   try {
     const message = JSON.parse(msg);
-    if (!('trpc' in message)) return;
+    if (!("trpc" in message)) return;
     const { trpc } = message;
-    if (!('id' in trpc) || trpc.id === null || trpc.id === undefined) return;
+    if (!("id" in trpc) || trpc.id === null || trpc.id === undefined) return;
     if (!trpc) return;
 
     const { id, params } = trpc;
-    const type = REDIS_METHOD_PROCEDURE_TYPE_MAP[trpc.method] ?? ('query' as const);
-    const ctx: inferRouterContext<TRouter> | undefined = await createContext?.();
+    const type =
+      REDIS_METHOD_PROCEDURE_TYPE_MAP[trpc.method] ?? ("query" as const);
+    const ctx: inferRouterContext<TRouter> | undefined =
+      await createContext?.();
 
     try {
       const path = params.path;
 
       if (!path) {
-        throw new Error('No path provided');
+        throw new Error("No path provided");
       }
 
-      if (type === 'subscription') {
+      if (type === "subscription") {
         throw new TRPCError({
-          message: 'Redis link does not support subscriptions (yet?)',
-          code: 'METHOD_NOT_SUPPORTED'
+          message: "Redis link does not support subscriptions (yet?)",
+          code: "METHOD_NOT_SUPPORTED",
         });
       }
 
       const deserializeInputValue = (rawValue: unknown) => {
-        return typeof rawValue !== 'undefined' ? transformer.input.deserialize(rawValue) : rawValue;
+        return typeof rawValue !== "undefined"
+          ? transformer.input.deserialize(rawValue)
+          : rawValue;
       };
 
       const input = deserializeInputValue(params.input);
 
-      const output = await callProcedure({
-        procedures: router._def.procedures,
+      const output = await callTRPCProcedure({
+        router,
         path,
-        rawInput: input,
+        input,
         ctx,
-        type
+        type,
+        signal: new AbortController().signal,
+        getRawInput: async () => input,
       });
 
       return {
         id,
         result: {
-          type: 'data',
-          data: output
-        }
+          type: "data",
+          data: output,
+        },
       };
     } catch (cause) {
       const error = getErrorFromUnknown(cause);
@@ -133,30 +147,40 @@ async function handleMessage<TRouter extends AnyRouter>(
         path: trpc?.path,
         input: trpc?.input,
         ctx,
-        req: msg
+        req: msg,
       });
 
       return {
         id,
-        error: router.getErrorShape({
+        error: getErrorShape({
           error,
           type,
           path: trpc?.path,
           input: trpc?.input,
-          ctx
-        })
+          ctx,
+          config: router._def._config,
+        }),
       };
     }
   } catch (cause) {
     const error = getErrorFromUnknown(cause);
     onError?.({
       error,
-      type: 'unknown',
+      type: "unknown",
       path: undefined,
       input: undefined,
       ctx: undefined,
-      req: msg
+      req: msg,
     });
     return;
   }
 }
+
+export type OnErrorFunction<TRouter extends AnyRouter, TRequest> = (opts: {
+  error: TRPCError;
+  type: ProcedureType | "unknown";
+  path: string | undefined;
+  input: unknown;
+  ctx: inferRouterContext<TRouter> | undefined;
+  req: TRequest;
+}) => void;
